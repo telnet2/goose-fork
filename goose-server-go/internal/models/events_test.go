@@ -213,6 +213,124 @@ func TestMessageEventJSON_Ping(t *testing.T) {
 	}
 }
 
+func TestMessageEventJSON_Notification(t *testing.T) {
+	// Test that Notification event correctly uses "message" field (not "notification")
+	// to match Rust protocol
+	notification := json.RawMessage(`{"method":"test","params":{}}`)
+	event := NewNotificationEvent("req-123", notification)
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if parsed["type"] != "Notification" {
+		t.Errorf("type = %v, want %q", parsed["type"], "Notification")
+	}
+
+	if parsed["request_id"] != "req-123" {
+		t.Errorf("request_id = %v, want %q", parsed["request_id"], "req-123")
+	}
+
+	// CRITICAL: Must be "message" not "notification" to match Rust protocol
+	if _, ok := parsed["message"]; !ok {
+		t.Errorf("Notification event should have 'message' field (not 'notification'), got: %s", string(data))
+	}
+
+	// Should NOT have "notification" field
+	if _, ok := parsed["notification"]; ok {
+		t.Errorf("Notification event should NOT have 'notification' field, got: %s", string(data))
+	}
+}
+
+func TestMessageEventJSON_Finish(t *testing.T) {
+	tokenState := &TokenState{
+		InputTokens:  100,
+		OutputTokens: 50,
+		TotalTokens:  150,
+	}
+	event := NewFinishEvent("stop", tokenState)
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if parsed["type"] != "Finish" {
+		t.Errorf("type = %v, want %q", parsed["type"], "Finish")
+	}
+
+	if parsed["reason"] != "stop" {
+		t.Errorf("reason = %v, want %q", parsed["reason"], "stop")
+	}
+
+	if _, ok := parsed["token_state"]; !ok {
+		t.Error("token_state field should be present")
+	}
+}
+
+func TestMessageEventJSON_ModelChange(t *testing.T) {
+	event := NewModelChangeEvent("claude-3-opus", "default")
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if parsed["type"] != "ModelChange" {
+		t.Errorf("type = %v, want %q", parsed["type"], "ModelChange")
+	}
+
+	if parsed["model"] != "claude-3-opus" {
+		t.Errorf("model = %v, want %q", parsed["model"], "claude-3-opus")
+	}
+
+	if parsed["mode"] != "default" {
+		t.Errorf("mode = %v, want %q", parsed["mode"], "default")
+	}
+}
+
+func TestMessageEventJSON_UpdateConversation(t *testing.T) {
+	conversation := Conversation{
+		NewUserMessage("Hello"),
+		NewAssistantMessage("Hi there!"),
+	}
+	event := NewUpdateConversationEvent(conversation)
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if parsed["type"] != "UpdateConversation" {
+		t.Errorf("type = %v, want %q", parsed["type"], "UpdateConversation")
+	}
+
+	if _, ok := parsed["conversation"]; !ok {
+		t.Error("conversation field should be present")
+	}
+}
+
 func TestFinishReason_Values(t *testing.T) {
 	reasons := []FinishReason{
 		FinishReasonStop,
