@@ -8,9 +8,12 @@ import (
 	"github.com/block/goose-server-go/internal/agent"
 	"github.com/block/goose-server-go/internal/config"
 	"github.com/block/goose-server-go/internal/extension"
+	"github.com/block/goose-server-go/internal/recipe"
+	"github.com/block/goose-server-go/internal/scheduler"
 	"github.com/block/goose-server-go/internal/server/middleware"
 	"github.com/block/goose-server-go/internal/server/routes"
 	"github.com/block/goose-server-go/internal/session"
+	"github.com/block/goose-server-go/internal/tunnel"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/rs/zerolog/log"
 )
@@ -23,6 +26,9 @@ type Server struct {
 	sessionManager   *session.Manager
 	agentManager     *agent.Manager
 	extensionManager *extension.Manager
+	recipeStorage    *recipe.Storage
+	scheduler        *scheduler.Scheduler
+	tunnelManager    *tunnel.Manager
 	mu               sync.Mutex
 }
 
@@ -66,6 +72,27 @@ func New(cfg *config.Config) *Server {
 	// Initialize extension manager (global, not per-session)
 	extensionManager := extension.NewManager("", cfg.WorkingDir)
 
+	// Initialize recipe storage
+	recipeStorage := recipe.NewStorage(cfg.RecipesDir())
+
+	// Initialize scheduler with a job executor that runs recipes
+	jobExecutor := func(ctx context.Context, job *scheduler.ScheduledJob) (string, error) {
+		// TODO: Implement actual recipe execution
+		// This would create a session and run the recipe
+		log.Info().Str("job_id", job.ID).Str("source", job.Source).Msg("Executing scheduled job")
+		return "session-" + job.ID, nil
+	}
+	sched, err := scheduler.NewScheduler(cfg.DataDir, jobExecutor)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize scheduler")
+	}
+
+	// Initialize tunnel manager
+	tunnelMgr, err := tunnel.NewManager(cfg.DataDir, cfg.Port, cfg.SecretKey)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize tunnel manager")
+	}
+
 	// Create Hertz server
 	h := server.Default(
 		server.WithHostPorts(fmt.Sprintf(":%d", cfg.Port)),
@@ -79,6 +106,9 @@ func New(cfg *config.Config) *Server {
 		sessionManager:   sessionManager,
 		agentManager:     agentManager,
 		extensionManager: extensionManager,
+		recipeStorage:    recipeStorage,
+		scheduler:        sched,
+		tunnelManager:    tunnelMgr,
 	}
 
 	// Setup routes
@@ -152,7 +182,7 @@ func (s *Server) setupRoutes() {
 	protected.GET("/config/slash_commands", configRoutes.GetSlashCommands)
 
 	// Recipe routes
-	recipeRoutes := routes.NewRecipeRoutes(s.state)
+	recipeRoutes := routes.NewRecipeRoutes(s.recipeStorage, s.scheduler)
 	protected.GET("/recipes/list", recipeRoutes.List)
 	protected.POST("/recipes/create", recipeRoutes.Create)
 	protected.POST("/recipes/parse", recipeRoutes.Parse)
@@ -165,7 +195,7 @@ func (s *Server) setupRoutes() {
 	protected.POST("/recipes/slash-command", recipeRoutes.SetSlashCommand)
 
 	// Schedule routes
-	scheduleRoutes := routes.NewScheduleRoutes(s.state)
+	scheduleRoutes := routes.NewScheduleRoutes(s.scheduler, s.sessionManager)
 	protected.GET("/schedule/list", scheduleRoutes.List)
 	protected.POST("/schedule/create", scheduleRoutes.Create)
 	protected.PUT("/schedule/:id", scheduleRoutes.Update)
@@ -181,7 +211,7 @@ func (s *Server) setupRoutes() {
 	protected.POST("/action-required/tool-confirmation", routes.ToolConfirmation(s.state))
 
 	// Tunnel routes
-	tunnelRoutes := routes.NewTunnelRoutes(s.state)
+	tunnelRoutes := routes.NewTunnelRoutes(s.tunnelManager)
 	protected.POST("/tunnel/start", tunnelRoutes.Start)
 	protected.POST("/tunnel/stop", tunnelRoutes.Stop)
 	protected.GET("/tunnel/status", tunnelRoutes.Status)
@@ -215,6 +245,16 @@ func (s *Server) Shutdown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Stop scheduler
+	if s.scheduler != nil {
+		s.scheduler.Stop()
+	}
+
+	// Stop tunnel manager
+	if s.tunnelManager != nil {
+		s.tunnelManager.Stop(false) // Don't clear auto-start on shutdown
+	}
+
 	// Close extension manager
 	if s.extensionManager != nil {
 		s.extensionManager.Close()
@@ -242,4 +282,19 @@ func (s *Server) AgentManager() *agent.Manager {
 // ExtensionManager returns the extension manager
 func (s *Server) ExtensionManager() *extension.Manager {
 	return s.extensionManager
+}
+
+// RecipeStorage returns the recipe storage
+func (s *Server) RecipeStorage() *recipe.Storage {
+	return s.recipeStorage
+}
+
+// Scheduler returns the scheduler
+func (s *Server) Scheduler() *scheduler.Scheduler {
+	return s.scheduler
+}
+
+// TunnelManager returns the tunnel manager
+func (s *Server) TunnelManager() *tunnel.Manager {
+	return s.tunnelManager
 }
