@@ -8,16 +8,18 @@ import (
 	"github.com/block/goose-server-go/internal/config"
 	"github.com/block/goose-server-go/internal/server/middleware"
 	"github.com/block/goose-server-go/internal/server/routes"
+	"github.com/block/goose-server-go/internal/session"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/rs/zerolog/log"
 )
 
 // Server represents the goose HTTP server
 type Server struct {
-	config *config.Config
-	hertz  *server.Hertz
-	state  *AppState
-	mu     sync.Mutex
+	config         *config.Config
+	hertz          *server.Hertz
+	state          *AppState
+	sessionManager *session.Manager
+	mu             sync.Mutex
 }
 
 // AppState holds the global application state
@@ -48,6 +50,12 @@ func (s *AppState) MarkRecipeRunIfAbsent(sessionID string) bool {
 func New(cfg *config.Config) *Server {
 	state := NewAppState(cfg)
 
+	// Initialize session manager
+	sessionManager, err := session.NewManager(cfg.SessionsDBPath())
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize session manager")
+	}
+
 	// Create Hertz server
 	h := server.Default(
 		server.WithHostPorts(fmt.Sprintf(":%d", cfg.Port)),
@@ -55,9 +63,10 @@ func New(cfg *config.Config) *Server {
 	)
 
 	srv := &Server{
-		config: cfg,
-		hertz:  h,
-		state:  state,
+		config:         cfg,
+		hertz:          h,
+		state:          state,
+		sessionManager: sessionManager,
 	}
 
 	// Setup routes
@@ -97,7 +106,7 @@ func (s *Server) setupRoutes() {
 	protected.POST("/reply", routes.Reply(s.state))
 
 	// Session routes
-	sessionRoutes := routes.NewSessionRoutes(s.state)
+	sessionRoutes := routes.NewSessionRoutes(s.sessionManager)
 	protected.GET("/sessions", sessionRoutes.List)
 	protected.GET("/sessions/insights", sessionRoutes.GetInsights)
 	protected.POST("/sessions/import", sessionRoutes.Import)
@@ -182,6 +191,16 @@ func (s *Server) Shutdown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Close session manager
+	if s.sessionManager != nil {
+		s.sessionManager.Close()
+	}
+
 	ctx := context.Background()
 	return s.hertz.Shutdown(ctx)
+}
+
+// SessionManager returns the session manager
+func (s *Server) SessionManager() *session.Manager {
+	return s.sessionManager
 }
