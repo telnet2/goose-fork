@@ -194,7 +194,8 @@ func (r *SessionRoutes) EditMessage(ctx context.Context, c *app.RequestContext) 
 		return
 	}
 
-	editType := "edit"
+	// Default to "fork" to match Rust's default_edit_type() -> EditType::Fork
+	editType := "fork"
 	if req.EditType != nil {
 		editType = *req.EditType
 	}

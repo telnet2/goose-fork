@@ -71,15 +71,16 @@ type MessageContent struct {
 	MimeType *string `json:"mimeType,omitempty"`
 
 	// For tool request/response
-	ID       *string          `json:"id,omitempty"`
-	ToolCall *json.RawMessage `json:"toolCall,omitempty"`
-	ToolResult *json.RawMessage `json:"toolResult,omitempty"`
-	ToolName *string          `json:"toolName,omitempty"`
-	Arguments *json.RawMessage `json:"arguments,omitempty"`
+	ID               *string          `json:"id,omitempty"`
+	ToolCall         *json.RawMessage `json:"toolCall,omitempty"`
+	ToolResult       *json.RawMessage `json:"toolResult,omitempty"`
+	ToolName         *string          `json:"toolName,omitempty"`
+	Arguments        *json.RawMessage `json:"arguments,omitempty"`
+	ThoughtSignature *string          `json:"thoughtSignature,omitempty"` // For toolRequest type
 
 	// For thinking content
 	Thinking  *string `json:"thinking,omitempty"`
-	Signature *string `json:"signature,omitempty"`
+	Signature *string `json:"signature,omitempty"` // For thinking type (different from thoughtSignature)
 
 	// For system notification
 	NotificationType *string `json:"notificationType,omitempty"`
