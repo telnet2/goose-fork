@@ -103,7 +103,8 @@ func (s *Server) setupRoutes() {
 	protected.POST("/agent/update_router_tool_selector", agentRoutes.UpdateRouterToolSelector)
 
 	// Reply route (SSE streaming)
-	protected.POST("/reply", routes.Reply(s.state))
+	replyRoutes := routes.NewReplyRoutes(s.sessionManager)
+	protected.POST("/reply", replyRoutes.Reply)
 
 	// Session routes
 	sessionRoutes := routes.NewSessionRoutes(s.sessionManager)
