@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/block/goose-server-go/internal/agent"
 	"github.com/block/goose-server-go/internal/config"
 	"github.com/block/goose-server-go/internal/server/middleware"
 	"github.com/block/goose-server-go/internal/server/routes"
@@ -19,15 +20,13 @@ type Server struct {
 	hertz          *server.Hertz
 	state          *AppState
 	sessionManager *session.Manager
+	agentManager   *agent.Manager
 	mu             sync.Mutex
 }
 
 // AppState holds the global application state
 type AppState struct {
 	Config *config.Config
-
-	// Active agents per session
-	agents sync.Map // map[string]*Agent
 
 	// Recipe run tracking
 	recipeRuns sync.Map // map[string]bool
@@ -56,6 +55,12 @@ func New(cfg *config.Config) *Server {
 		log.Fatal().Err(err).Msg("Failed to initialize session manager")
 	}
 
+	// Initialize agent manager
+	agentManager := agent.NewManager(sessionManager)
+
+	// Register default mock provider
+	agentManager.RegisterProvider(agent.NewMockProvider())
+
 	// Create Hertz server
 	h := server.Default(
 		server.WithHostPorts(fmt.Sprintf(":%d", cfg.Port)),
@@ -67,6 +72,7 @@ func New(cfg *config.Config) *Server {
 		hertz:          h,
 		state:          state,
 		sessionManager: sessionManager,
+		agentManager:   agentManager,
 	}
 
 	// Setup routes
@@ -90,7 +96,7 @@ func (s *Server) setupRoutes() {
 	protected.Use(middleware.Auth(s.config.SecretKey))
 
 	// Agent routes
-	agentRoutes := routes.NewAgentRoutes(s.state)
+	agentRoutes := routes.NewAgentRoutes(s.agentManager)
 	protected.POST("/agent/start", agentRoutes.Start)
 	protected.POST("/agent/resume", agentRoutes.Resume)
 	protected.POST("/agent/add_extension", agentRoutes.AddExtension)
@@ -103,7 +109,7 @@ func (s *Server) setupRoutes() {
 	protected.POST("/agent/update_router_tool_selector", agentRoutes.UpdateRouterToolSelector)
 
 	// Reply route (SSE streaming)
-	replyRoutes := routes.NewReplyRoutes(s.sessionManager)
+	replyRoutes := routes.NewReplyRoutes(s.sessionManager, s.agentManager)
 	protected.POST("/reply", replyRoutes.Reply)
 
 	// Session routes
@@ -204,4 +210,9 @@ func (s *Server) Shutdown() error {
 // SessionManager returns the session manager
 func (s *Server) SessionManager() *session.Manager {
 	return s.sessionManager
+}
+
+// AgentManager returns the agent manager
+func (s *Server) AgentManager() *agent.Manager {
+	return s.agentManager
 }

@@ -1268,10 +1268,19 @@ func TestSSEFormat(t *testing.T) {
 - Fixed JSON serialization bug with duplicate "message" field tag
 - Test coverage: 16 new tests (6 SSE writer + 10 event types)
 
-### Phase 4: Agent Integration (Week 7-8)
-- [ ] Agent service abstraction
-- [ ] Basic LLM provider support
-- [ ] Tool execution framework
+### Phase 4: Agent Integration (Week 7-8) ✅ COMPLETED
+- [x] Agent service abstraction
+- [x] Basic LLM provider support
+- [x] Tool execution framework
+
+**Implementation Notes:**
+- Agent: `internal/agent/agent.go` with Manager, Agent, Provider interface
+- Mock Provider: `internal/agent/mock_provider.go` for testing/development
+- Tool Types: `internal/models/tool.go` with ToolInfo, ToolRequest, ToolResponse
+- Agent routes: Start, Resume, GetTools, CallTool, UpdateProvider, UpdateFromSession
+- Reply endpoint: Updated to use agent manager for SSE streaming
+- Provider interface: Chat streaming with context cancellation support
+- Test coverage: 12 new agent tests covering manager lifecycle, chat, tools
 
 ### Phase 5: Extensions (Week 9-10)
 - [ ] MCP client implementation

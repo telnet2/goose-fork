@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/block/goose-server-go/internal/agent"
 	"github.com/block/goose-server-go/internal/models"
 	"github.com/block/goose-server-go/internal/session"
 	"github.com/block/goose-server-go/pkg/sse"
@@ -21,11 +22,15 @@ const (
 // ReplyRoutes handles the /reply endpoint
 type ReplyRoutes struct {
 	sessionManager *session.Manager
+	agentManager   *agent.Manager
 }
 
 // NewReplyRoutes creates a new ReplyRoutes instance
-func NewReplyRoutes(manager *session.Manager) *ReplyRoutes {
-	return &ReplyRoutes{sessionManager: manager}
+func NewReplyRoutes(sessionMgr *session.Manager, agentMgr *agent.Manager) *ReplyRoutes {
+	return &ReplyRoutes{
+		sessionManager: sessionMgr,
+		agentManager:   agentMgr,
+	}
 }
 
 // Reply handles POST /reply - the main SSE streaming endpoint
@@ -58,9 +63,23 @@ func (r *ReplyRoutes) Reply(ctx context.Context, c *app.RequestContext) {
 
 	if sess == nil {
 		c.JSON(consts.StatusFailedDependency, map[string]string{
-			"message": "Session not found or not active",
+			"message": "Session not found",
 		})
 		return
+	}
+
+	// Get or resume agent
+	ag, ok := r.agentManager.Get(req.SessionID)
+	if !ok {
+		// Try to resume agent
+		var resumeErr error
+		ag, resumeErr = r.agentManager.Resume(ctx, req.SessionID, true)
+		if resumeErr != nil {
+			c.JSON(consts.StatusFailedDependency, map[string]string{
+				"message": "Agent not active. Please start or resume the agent first: " + resumeErr.Error(),
+			})
+			return
+		}
 	}
 
 	// Create SSE writer
@@ -71,11 +90,11 @@ func (r *ReplyRoutes) Reply(ctx context.Context, c *app.RequestContext) {
 	writer.StartHeartbeat(SSEHeartbeatInterval)
 
 	// Process messages and stream response
-	r.streamResponse(ctx, writer, sess, req.Messages)
+	r.streamResponse(ctx, writer, sess, ag, req.Messages)
 }
 
 // streamResponse processes the chat request and streams SSE events
-func (r *ReplyRoutes) streamResponse(ctx context.Context, writer *sse.Writer, sess *models.Session, messages []models.Message) {
+func (r *ReplyRoutes) streamResponse(ctx context.Context, writer *sse.Writer, sess *models.Session, ag *agent.Agent, messages []models.Message) {
 	// Add incoming messages to session conversation
 	for _, msg := range messages {
 		sess.Conversation = append(sess.Conversation, msg)
@@ -102,44 +121,41 @@ func (r *ReplyRoutes) streamResponse(ctx context.Context, writer *sse.Writer, se
 		tokenState.AccumulatedTotalTokens = *sess.AccumulatedTotalTokens
 	}
 
-	// TODO: In Phase 4, this will call the actual agent/LLM provider
-	// For now, implement a mock response that demonstrates SSE protocol
-
-	// Simulate processing time
-	select {
-	case <-ctx.Done():
-		writer.WriteEvent(models.NewErrorEvent("Request cancelled"))
-		return
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	// Generate mock assistant response
-	// In production, this would come from the LLM provider
-	responseText := "I received your message. This is a mock response from the Go server. " +
-		"In Phase 4, I will be replaced with actual LLM integration."
-
-	// Create assistant message
-	assistantMsg := models.NewAssistantMessage(responseText)
-
-	// Simulate token usage
-	tokenState.InputTokens = 50
-	tokenState.OutputTokens = 30
-	tokenState.TotalTokens = 80
-	tokenState.AccumulatedInputTokens += tokenState.InputTokens
-	tokenState.AccumulatedOutputTokens += tokenState.OutputTokens
-	tokenState.AccumulatedTotalTokens += tokenState.TotalTokens
-
-	// Send Message event
-	if err := writer.WriteEvent(models.NewMessageEvent(assistantMsg, tokenState)); err != nil {
-		// Client disconnected
+	// Send messages to agent for processing
+	eventChan, err := ag.Chat(ctx, sess.Conversation)
+	if err != nil {
+		writer.WriteEvent(models.NewErrorEvent("Failed to process chat: " + err.Error()))
 		return
 	}
 
-	// Add assistant message to conversation
-	sess.Conversation = append(sess.Conversation, assistantMsg)
+	// Stream events from agent
+	for event := range eventChan {
+		select {
+		case <-ctx.Done():
+			writer.WriteEvent(models.NewErrorEvent("Request cancelled"))
+			return
+		default:
+		}
+
+		// Update token state from event
+		if event.TokenState != nil {
+			tokenState = event.TokenState
+		}
+
+		// Add message to conversation if it's a Message event
+		if event.Type == models.EventTypeMessage && event.Message != nil {
+			sess.Conversation = append(sess.Conversation, *event.Message)
+		}
+
+		// Write event to SSE stream
+		if err := writer.WriteEvent(event); err != nil {
+			// Client disconnected
+			return
+		}
+	}
+
+	// Update session with final state
 	sess.MessageCount = uint64(len(sess.Conversation))
-
-	// Update session token counts
 	sess.InputTokens = &tokenState.InputTokens
 	sess.OutputTokens = &tokenState.OutputTokens
 	sess.TotalTokens = &tokenState.TotalTokens
@@ -150,12 +166,7 @@ func (r *ReplyRoutes) streamResponse(ctx context.Context, writer *sse.Writer, se
 	// Save session
 	if err := r.sessionManager.Update(sess); err != nil {
 		writer.WriteEvent(models.NewErrorEvent("Failed to save session: " + err.Error()))
-		return
 	}
-
-	// Send Finish event
-	reason := string(models.FinishReasonStop)
-	writer.WriteEvent(models.NewFinishEvent(reason, tokenState))
 }
 
 // Reply is the legacy function for backward compatibility
