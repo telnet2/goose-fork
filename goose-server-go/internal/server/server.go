@@ -7,6 +7,7 @@ import (
 
 	"github.com/block/goose-server-go/internal/agent"
 	"github.com/block/goose-server-go/internal/config"
+	"github.com/block/goose-server-go/internal/extension"
 	"github.com/block/goose-server-go/internal/server/middleware"
 	"github.com/block/goose-server-go/internal/server/routes"
 	"github.com/block/goose-server-go/internal/session"
@@ -16,12 +17,13 @@ import (
 
 // Server represents the goose HTTP server
 type Server struct {
-	config         *config.Config
-	hertz          *server.Hertz
-	state          *AppState
-	sessionManager *session.Manager
-	agentManager   *agent.Manager
-	mu             sync.Mutex
+	config           *config.Config
+	hertz            *server.Hertz
+	state            *AppState
+	sessionManager   *session.Manager
+	agentManager     *agent.Manager
+	extensionManager *extension.Manager
+	mu               sync.Mutex
 }
 
 // AppState holds the global application state
@@ -61,6 +63,9 @@ func New(cfg *config.Config) *Server {
 	// Register default mock provider
 	agentManager.RegisterProvider(agent.NewMockProvider())
 
+	// Initialize extension manager (global, not per-session)
+	extensionManager := extension.NewManager("", cfg.WorkingDir)
+
 	// Create Hertz server
 	h := server.Default(
 		server.WithHostPorts(fmt.Sprintf(":%d", cfg.Port)),
@@ -68,11 +73,12 @@ func New(cfg *config.Config) *Server {
 	)
 
 	srv := &Server{
-		config:         cfg,
-		hertz:          h,
-		state:          state,
-		sessionManager: sessionManager,
-		agentManager:   agentManager,
+		config:           cfg,
+		hertz:            h,
+		state:            state,
+		sessionManager:   sessionManager,
+		agentManager:     agentManager,
+		extensionManager: extensionManager,
 	}
 
 	// Setup routes
@@ -180,6 +186,17 @@ func (s *Server) setupRoutes() {
 	protected.POST("/tunnel/stop", tunnelRoutes.Stop)
 	protected.GET("/tunnel/status", tunnelRoutes.Status)
 
+	// Extension routes
+	extensionRoutes := routes.NewExtensionRoutes(s.extensionManager)
+	protected.GET("/extensions", extensionRoutes.List)
+	protected.POST("/extensions", extensionRoutes.Add)
+	protected.GET("/extensions/:name", extensionRoutes.GetExtensionInfo)
+	protected.DELETE("/extensions/:name", extensionRoutes.Remove)
+	protected.GET("/extensions/tools", extensionRoutes.ListTools)
+	protected.POST("/extensions/tools/call", extensionRoutes.CallTool)
+	protected.GET("/extensions/resources", extensionRoutes.ListResources)
+	protected.POST("/extensions/resources/read", extensionRoutes.ReadResource)
+
 	// Diagnostics
 	protected.GET("/diagnostics/:session_id", routes.Diagnostics(s.state))
 
@@ -198,6 +215,11 @@ func (s *Server) Shutdown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Close extension manager
+	if s.extensionManager != nil {
+		s.extensionManager.Close()
+	}
+
 	// Close session manager
 	if s.sessionManager != nil {
 		s.sessionManager.Close()
@@ -215,4 +237,9 @@ func (s *Server) SessionManager() *session.Manager {
 // AgentManager returns the agent manager
 func (s *Server) AgentManager() *agent.Manager {
 	return s.agentManager
+}
+
+// ExtensionManager returns the extension manager
+func (s *Server) ExtensionManager() *extension.Manager {
+	return s.extensionManager
 }

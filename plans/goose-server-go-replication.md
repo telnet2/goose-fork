@@ -1282,10 +1282,21 @@ func TestSSEFormat(t *testing.T) {
 - Provider interface: Chat streaming with context cancellation support
 - Test coverage: 12 new agent tests covering manager lifecycle, chat, tools
 
-### Phase 5: Extensions (Week 9-10)
-- [ ] MCP client implementation
-- [ ] Extension configuration
-- [ ] Built-in extensions
+### Phase 5: Extensions (Week 9-10) ✅ COMPLETED
+- [x] MCP client implementation
+- [x] Extension configuration
+- [x] Built-in extensions
+
+**Implementation Notes:**
+- MCP Client: `internal/extension/mcp_client.go` with McpClient interface matching Rust McpClientTrait
+- Extension types: `internal/extension/config.go` with SSE, Stdio, Builtin, Platform, StreamableHTTP, Frontend, InlinePython
+- Extension Manager: `internal/extension/manager.go` with add/remove, tool routing, resource management
+- Client implementations: `internal/extension/clients.go` (SSE, Stdio, HTTP, Frontend, InlinePython)
+- Platform extensions: `internal/extension/platform_extensions.go` (Todo, ChatRecall, ExtensionManager, Skills)
+- Extension routes: `internal/server/routes/extension.go` (List, Add, Remove, ListTools, CallTool, ListResources, ReadResource)
+- Tool prefix convention: `{extension_key}__{tool_name}` matching Rust implementation
+- Environment variable security: 31 disallowed keys (PATH, LD_PRELOAD, etc.)
+- Test coverage: 44 extension tests covering config, manager, platform extensions
 
 ### Phase 6: Full API (Week 11-12)
 - [ ] Recipe management

@@ -18,6 +18,7 @@ type Config struct {
 	// Paths
 	DataDir    string `yaml:"data_dir"`
 	ConfigFile string `yaml:"config_file"`
+	WorkingDir string `yaml:"working_dir"`
 
 	// Provider settings
 	DefaultProvider string `yaml:"default_provider"`
@@ -76,9 +77,15 @@ func DefaultConfigDir() string {
 
 // Load loads the configuration from environment variables and config file
 func Load() (*Config, error) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		workingDir = "."
+	}
+
 	cfg := &Config{
-		Port:    3000,
-		DataDir: DefaultDataDir(),
+		Port:       3000,
+		DataDir:    DefaultDataDir(),
+		WorkingDir: workingDir,
 	}
 
 	// Load from environment variables
