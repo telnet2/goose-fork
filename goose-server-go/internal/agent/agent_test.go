@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/block/goose-server-go/internal/models"
+	"github.com/block/goose-server-go/internal/provider"
 	"github.com/block/goose-server-go/internal/session"
 )
 
@@ -29,8 +30,7 @@ func newTestSessionManager(t *testing.T) *session.Manager {
 
 func TestManager_StartAndGet(t *testing.T) {
 	sessionManager := newTestSessionManager(t)
-	manager := NewManager(sessionManager)
-	manager.RegisterProvider(NewMockProvider())
+	manager := NewManager(sessionManager, nil) // nil registry uses mock provider
 
 	ctx := context.Background()
 	config := &AgentConfig{
@@ -64,8 +64,7 @@ func TestManager_StartAndGet(t *testing.T) {
 
 func TestManager_Resume(t *testing.T) {
 	sessionManager := newTestSessionManager(t)
-	manager := NewManager(sessionManager)
-	manager.RegisterProvider(NewMockProvider())
+	manager := NewManager(sessionManager, nil)
 
 	// Create a session directly
 	sess, err := sessionManager.Create("/tmp/test")
@@ -90,8 +89,7 @@ func TestManager_Resume(t *testing.T) {
 
 func TestManager_Stop(t *testing.T) {
 	sessionManager := newTestSessionManager(t)
-	manager := NewManager(sessionManager)
-	manager.RegisterProvider(NewMockProvider())
+	manager := NewManager(sessionManager, nil)
 
 	ctx := context.Background()
 	config := &AgentConfig{
@@ -118,18 +116,14 @@ func TestManager_Stop(t *testing.T) {
 	}
 }
 
-func TestManager_RegisterProvider(t *testing.T) {
+func TestManager_GetProvider(t *testing.T) {
 	sessionManager := newTestSessionManager(t)
-	manager := NewManager(sessionManager)
+	manager := NewManager(sessionManager, nil)
 
-	// Register a provider
-	provider := NewMockProvider()
-	manager.RegisterProvider(provider)
-
-	// Get the provider
-	got, ok := manager.GetProvider("mock")
+	// With nil registry, GetProvider returns the mock provider
+	got, ok := manager.GetProvider("any-name")
 	if !ok {
-		t.Fatal("GetProvider returned false")
+		t.Fatal("GetProvider should return true with nil registry")
 	}
 
 	if got.Name() != "mock" {
@@ -139,20 +133,21 @@ func TestManager_RegisterProvider(t *testing.T) {
 
 func TestManager_ListProviders(t *testing.T) {
 	sessionManager := newTestSessionManager(t)
-	manager := NewManager(sessionManager)
-
-	manager.RegisterProvider(NewMockProvider())
+	manager := NewManager(sessionManager, nil)
 
 	providers := manager.ListProviders()
 	if len(providers) != 1 {
 		t.Errorf("len(providers) = %d, want 1", len(providers))
 	}
+
+	if providers[0].Name() != "mock" {
+		t.Errorf("providers[0].Name() = %q, want %q", providers[0].Name(), "mock")
+	}
 }
 
 func TestAgent_Chat(t *testing.T) {
 	sessionManager := newTestSessionManager(t)
-	manager := NewManager(sessionManager)
-	manager.RegisterProvider(NewMockProvider())
+	manager := NewManager(sessionManager, nil)
 
 	ctx := context.Background()
 	config := &AgentConfig{
@@ -199,8 +194,7 @@ func TestAgent_Chat(t *testing.T) {
 
 func TestAgent_AddTool(t *testing.T) {
 	sessionManager := newTestSessionManager(t)
-	manager := NewManager(sessionManager)
-	manager.RegisterProvider(NewMockProvider())
+	manager := NewManager(sessionManager, nil)
 
 	ctx := context.Background()
 	config := &AgentConfig{
@@ -232,15 +226,15 @@ func TestAgent_AddTool(t *testing.T) {
 	}
 }
 
-func TestMockProvider_Chat(t *testing.T) {
-	provider := NewMockProvider()
+func TestMockProviderAdapter_Chat(t *testing.T) {
+	mockProvider := NewMockProviderAdapter()
 
 	ctx := context.Background()
 	messages := []models.Message{
 		models.NewUserMessage("Hello, test!"),
 	}
 
-	eventChan, err := provider.Chat(ctx, messages, ChatOptions{})
+	eventChan, err := mockProvider.Chat(ctx, messages, provider.ChatOptions{})
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -274,15 +268,15 @@ func TestMockProvider_Chat(t *testing.T) {
 	}
 }
 
-func TestMockProvider_Cancellation(t *testing.T) {
-	provider := NewMockProvider()
+func TestMockProviderAdapter_Cancellation(t *testing.T) {
+	mockProvider := NewMockProviderAdapter()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	messages := []models.Message{
 		models.NewUserMessage("Hello"),
 	}
 
-	eventChan, err := provider.Chat(ctx, messages, ChatOptions{})
+	eventChan, err := mockProvider.Chat(ctx, messages, provider.ChatOptions{})
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -302,19 +296,49 @@ func TestMockProvider_Cancellation(t *testing.T) {
 	}
 }
 
-func TestMockProvider_GetModels(t *testing.T) {
-	provider := NewMockProvider()
+func TestMockProviderAdapter_GetModels(t *testing.T) {
+	mockProvider := NewMockProviderAdapter()
 
-	models := provider.GetModels()
+	models := mockProvider.GetModels()
 	if len(models) != 2 {
 		t.Errorf("len(models) = %d, want 2", len(models))
 	}
 }
 
-func TestMockProvider_IsConfigured(t *testing.T) {
-	provider := NewMockProvider()
+func TestMockProviderAdapter_IsConfigured(t *testing.T) {
+	mockProvider := NewMockProviderAdapter()
 
-	if !provider.IsConfigured() {
+	if !mockProvider.IsConfigured() {
 		t.Error("Mock provider should always be configured")
+	}
+}
+
+func TestMockProviderAdapter_Generate(t *testing.T) {
+	mockProvider := NewMockProviderAdapter()
+
+	ctx := context.Background()
+	messages := []models.Message{
+		models.NewUserMessage("Test message"),
+	}
+
+	msg, tokenState, err := mockProvider.Generate(ctx, messages, provider.ChatOptions{})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	if msg == nil {
+		t.Fatal("Message should not be nil")
+	}
+
+	if msg.Role != models.RoleAssistant {
+		t.Errorf("Role = %q, want %q", msg.Role, models.RoleAssistant)
+	}
+
+	if tokenState == nil {
+		t.Fatal("TokenState should not be nil")
+	}
+
+	if tokenState.TotalTokens <= 0 {
+		t.Error("TotalTokens should be positive")
 	}
 }

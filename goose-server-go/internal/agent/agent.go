@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/block/goose-server-go/internal/models"
+	"github.com/block/goose-server-go/internal/provider"
 	"github.com/block/goose-server-go/internal/session"
 )
 
@@ -13,7 +14,7 @@ import (
 type Agent struct {
 	ID        string
 	SessionID string
-	Provider  Provider
+	Provider  provider.Provider
 	Config    *AgentConfig
 	Tools     []models.ToolInfo
 
@@ -29,72 +30,73 @@ type AgentConfig struct {
 	ModelName      string
 	Recipe         *models.Recipe
 	ExtensionNames []string
-}
-
-// Provider defines the interface for LLM providers
-type Provider interface {
-	// Name returns the provider name
-	Name() string
-
-	// Chat sends messages and returns a stream of events
-	Chat(ctx context.Context, messages []models.Message, options ChatOptions) (<-chan models.MessageEvent, error)
-
-	// GetModels returns available models for this provider
-	GetModels() []string
-
-	// IsConfigured returns whether the provider is properly configured
-	IsConfigured() bool
-}
-
-// ChatOptions contains options for a chat request
-type ChatOptions struct {
-	Model       string
-	MaxTokens   int
-	Temperature float64
-	Tools       []models.ToolInfo
+	SystemPrompt   string
 }
 
 // Manager manages active agents
 type Manager struct {
-	agents         sync.Map // map[string]*Agent (sessionID -> Agent)
-	sessionManager *session.Manager
-	providers      map[string]Provider
-	mu             sync.RWMutex
+	agents           sync.Map // map[string]*Agent (sessionID -> Agent)
+	sessionManager   *session.Manager
+	providerRegistry *provider.Registry
+	mockProvider     provider.Provider
+	mu               sync.RWMutex
 }
 
 // NewManager creates a new agent manager
-func NewManager(sessionManager *session.Manager) *Manager {
+func NewManager(sessionManager *session.Manager, providerRegistry *provider.Registry) *Manager {
 	return &Manager{
-		sessionManager: sessionManager,
-		providers:      make(map[string]Provider),
+		sessionManager:   sessionManager,
+		providerRegistry: providerRegistry,
+		mockProvider:     NewMockProviderAdapter(),
 	}
-}
-
-// RegisterProvider registers an LLM provider
-func (m *Manager) RegisterProvider(provider Provider) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.providers[provider.Name()] = provider
 }
 
 // GetProvider returns a provider by name
-func (m *Manager) GetProvider(name string) (Provider, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	p, ok := m.providers[name]
-	return p, ok
+func (m *Manager) GetProvider(name string) (provider.Provider, bool) {
+	if m.providerRegistry == nil {
+		return m.mockProvider, true
+	}
+	return m.providerRegistry.Get(name)
+}
+
+// GetConfiguredProvider returns a configured provider by name
+func (m *Manager) GetConfiguredProvider(name string) (provider.Provider, error) {
+	if m.providerRegistry == nil {
+		return m.mockProvider, nil
+	}
+	return m.providerRegistry.GetConfigured(name)
+}
+
+// GetDefaultProvider returns the default configured provider
+func (m *Manager) GetDefaultProvider() (provider.Provider, error) {
+	if m.providerRegistry == nil {
+		return m.mockProvider, nil
+	}
+	return m.providerRegistry.GetDefault()
 }
 
 // ListProviders returns all registered providers
-func (m *Manager) ListProviders() []Provider {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	providers := make([]Provider, 0, len(m.providers))
-	for _, p := range m.providers {
-		providers = append(providers, p)
+func (m *Manager) ListProviders() []provider.Provider {
+	if m.providerRegistry == nil {
+		return []provider.Provider{m.mockProvider}
 	}
-	return providers
+	return m.providerRegistry.List()
+}
+
+// ListConfiguredProviders returns all configured providers
+func (m *Manager) ListConfiguredProviders() []provider.Provider {
+	if m.providerRegistry == nil {
+		return []provider.Provider{}
+	}
+	return m.providerRegistry.ListConfigured()
+}
+
+// GetProviderMetadata returns metadata for all providers
+func (m *Manager) GetProviderMetadata() []provider.ProviderMetadata {
+	if m.providerRegistry == nil {
+		return []provider.ProviderMetadata{}
+	}
+	return m.providerRegistry.GetMetadata()
 }
 
 // Start starts a new agent for a session
@@ -106,16 +108,31 @@ func (m *Manager) Start(ctx context.Context, config *AgentConfig) (*Agent, error
 	}
 
 	// Get provider
-	provider, ok := m.GetProvider(config.ProviderName)
-	if !ok {
-		// Use mock provider if no real provider configured
-		provider = NewMockProvider()
+	var prov provider.Provider
+	if config.ProviderName != "" {
+		prov, _ = m.GetProvider(config.ProviderName)
+	}
+	if prov == nil || !prov.IsConfigured() {
+		// Try to get default configured provider
+		if defaultProv, err := m.GetDefaultProvider(); err == nil && defaultProv.IsConfigured() {
+			prov = defaultProv
+			config.ProviderName = prov.Name()
+		} else {
+			// Fall back to mock provider
+			prov = m.mockProvider
+			config.ProviderName = "mock"
+		}
+	}
+
+	// Set default model if not specified
+	if config.ModelName == "" {
+		config.ModelName = prov.GetDefaultModel()
 	}
 
 	agent := &Agent{
 		ID:        sess.ID,
 		SessionID: sess.ID,
-		Provider:  provider,
+		Provider:  prov,
 		Config:    config,
 		Tools:     []models.ToolInfo{},
 		running:   true,
@@ -154,26 +171,37 @@ func (m *Manager) Resume(ctx context.Context, sessionID string, loadModelAndExte
 	}
 
 	// Determine provider
-	providerName := "mock"
+	providerName := ""
 	if sess.ProviderName != nil {
 		providerName = *sess.ProviderName
 	}
 
-	provider, ok := m.GetProvider(providerName)
-	if !ok {
-		provider = NewMockProvider()
+	var prov provider.Provider
+	if providerName != "" {
+		prov, _ = m.GetProvider(providerName)
+	}
+	if prov == nil || !prov.IsConfigured() {
+		// Try default provider
+		if defaultProv, err := m.GetDefaultProvider(); err == nil && defaultProv.IsConfigured() {
+			prov = defaultProv
+			providerName = prov.Name()
+		} else {
+			prov = m.mockProvider
+			providerName = "mock"
+		}
 	}
 
 	config := &AgentConfig{
 		WorkingDir:   sess.WorkingDir,
 		ProviderName: providerName,
+		ModelName:    prov.GetDefaultModel(),
 		Recipe:       sess.Recipe,
 	}
 
 	agent := &Agent{
 		ID:        sessionID,
 		SessionID: sessionID,
-		Provider:  provider,
+		Provider:  prov,
 		Config:    config,
 		Tools:     []models.ToolInfo{},
 		running:   true,
@@ -207,6 +235,32 @@ func (m *Manager) Stop(sessionID string) error {
 	return nil
 }
 
+// UpdateProvider updates the provider for an agent
+func (m *Manager) UpdateProvider(sessionID string, providerName string, modelName string) error {
+	agentVal, ok := m.agents.Load(sessionID)
+	if !ok {
+		return fmt.Errorf("agent not found: %s", sessionID)
+	}
+
+	agent := agentVal.(*Agent)
+	prov, ok := m.GetProvider(providerName)
+	if !ok {
+		return fmt.Errorf("provider not found: %s", providerName)
+	}
+
+	agent.mu.Lock()
+	agent.Provider = prov
+	agent.Config.ProviderName = providerName
+	if modelName != "" {
+		agent.Config.ModelName = modelName
+	} else {
+		agent.Config.ModelName = prov.GetDefaultModel()
+	}
+	agent.mu.Unlock()
+
+	return nil
+}
+
 // Chat sends messages to the agent and returns a stream of events
 func (a *Agent) Chat(ctx context.Context, messages []models.Message) (<-chan models.MessageEvent, error) {
 	a.mu.RLock()
@@ -214,14 +268,18 @@ func (a *Agent) Chat(ctx context.Context, messages []models.Message) (<-chan mod
 		a.mu.RUnlock()
 		return nil, fmt.Errorf("agent is not running")
 	}
+	prov := a.Provider
+	config := a.Config
+	tools := a.Tools
 	a.mu.RUnlock()
 
-	options := ChatOptions{
-		Model: a.Config.ModelName,
-		Tools: a.Tools,
+	options := provider.ChatOptions{
+		Model:  config.ModelName,
+		Tools:  tools,
+		System: config.SystemPrompt,
 	}
 
-	return a.Provider.Chat(ctx, messages, options)
+	return prov.Chat(ctx, messages, options)
 }
 
 // AddTool adds a tool to the agent
@@ -243,4 +301,18 @@ func (a *Agent) IsRunning() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.running
+}
+
+// SetSystemPrompt updates the system prompt for the agent
+func (a *Agent) SetSystemPrompt(prompt string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Config.SystemPrompt = prompt
+}
+
+// GetSystemPrompt returns the current system prompt
+func (a *Agent) GetSystemPrompt() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.Config.SystemPrompt
 }

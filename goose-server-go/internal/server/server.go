@@ -8,6 +8,7 @@ import (
 	"github.com/block/goose-server-go/internal/agent"
 	"github.com/block/goose-server-go/internal/config"
 	"github.com/block/goose-server-go/internal/extension"
+	"github.com/block/goose-server-go/internal/provider"
 	"github.com/block/goose-server-go/internal/recipe"
 	"github.com/block/goose-server-go/internal/scheduler"
 	"github.com/block/goose-server-go/internal/server/middleware"
@@ -26,6 +27,7 @@ type Server struct {
 	sessionManager   *session.Manager
 	agentManager     *agent.Manager
 	extensionManager *extension.Manager
+	providerRegistry *provider.Registry
 	recipeStorage    *recipe.Storage
 	scheduler        *scheduler.Scheduler
 	tunnelManager    *tunnel.Manager
@@ -55,6 +57,7 @@ func (s *AppState) MarkRecipeRunIfAbsent(sessionID string) bool {
 
 // New creates a new server instance
 func New(cfg *config.Config) *Server {
+	ctx := context.Background()
 	state := NewAppState(cfg)
 
 	// Initialize session manager
@@ -63,11 +66,19 @@ func New(cfg *config.Config) *Server {
 		log.Fatal().Err(err).Msg("Failed to initialize session manager")
 	}
 
-	// Initialize agent manager
-	agentManager := agent.NewManager(sessionManager)
+	// Initialize provider registry
+	providerRegistry := provider.NewRegistry()
+	if err := providerRegistry.Initialize(ctx); err != nil {
+		log.Warn().Err(err).Msg("Failed to initialize some providers")
+	}
 
-	// Register default mock provider
-	agentManager.RegisterProvider(agent.NewMockProvider())
+	// Log configured providers
+	for _, p := range providerRegistry.ListConfigured() {
+		log.Info().Str("provider", p.Name()).Str("model", p.GetDefaultModel()).Msg("Provider configured")
+	}
+
+	// Initialize agent manager with provider registry
+	agentManager := agent.NewManager(sessionManager, providerRegistry)
 
 	// Initialize extension manager (global, not per-session)
 	extensionManager := extension.NewManager("", cfg.WorkingDir)
@@ -106,6 +117,7 @@ func New(cfg *config.Config) *Server {
 		sessionManager:   sessionManager,
 		agentManager:     agentManager,
 		extensionManager: extensionManager,
+		providerRegistry: providerRegistry,
 		recipeStorage:    recipeStorage,
 		scheduler:        sched,
 		tunnelManager:    tunnelMgr,
@@ -161,7 +173,7 @@ func (s *Server) setupRoutes() {
 	protected.PUT("/sessions/:session_id/user_recipe_values", sessionRoutes.UpdateUserRecipeValues)
 
 	// Config routes
-	configRoutes := routes.NewConfigRoutes(s.state)
+	configRoutes := routes.NewConfigRoutes(s.agentManager)
 	protected.GET("/config", configRoutes.Get)
 	protected.POST("/config/read", configRoutes.Read)
 	protected.POST("/config/upsert", configRoutes.Upsert)
@@ -297,4 +309,9 @@ func (s *Server) Scheduler() *scheduler.Scheduler {
 // TunnelManager returns the tunnel manager
 func (s *Server) TunnelManager() *tunnel.Manager {
 	return s.tunnelManager
+}
+
+// ProviderRegistry returns the provider registry
+func (s *Server) ProviderRegistry() *provider.Registry {
+	return s.providerRegistry
 }

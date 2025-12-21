@@ -2,45 +2,65 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/block/goose-server-go/internal/models"
+	"github.com/block/goose-server-go/internal/provider"
 )
 
-// MockProvider is a mock LLM provider for testing and development
-type MockProvider struct {
-	name   string
-	models []string
+// MockProviderAdapter implements provider.Provider for testing
+type MockProviderAdapter struct {
+	models []provider.ModelInfo
 }
 
-// NewMockProvider creates a new mock provider
-func NewMockProvider() *MockProvider {
-	return &MockProvider{
-		name: "mock",
-		models: []string{
-			"mock-model-v1",
-			"mock-model-v2",
+// NewMockProviderAdapter creates a new mock provider adapter
+func NewMockProviderAdapter() *MockProviderAdapter {
+	return &MockProviderAdapter{
+		models: []provider.ModelInfo{
+			{Name: "mock-model-v1", DisplayName: "Mock Model v1", ContextLength: 128000, SupportsTools: true},
+			{Name: "mock-model-v2", DisplayName: "Mock Model v2", ContextLength: 128000, SupportsTools: true},
 		},
 	}
 }
 
 // Name returns the provider name
-func (p *MockProvider) Name() string {
-	return p.name
+func (p *MockProviderAdapter) Name() string {
+	return "mock"
+}
+
+// DisplayName returns the display name
+func (p *MockProviderAdapter) DisplayName() string {
+	return "Mock Provider"
 }
 
 // GetModels returns available models
-func (p *MockProvider) GetModels() []string {
+func (p *MockProviderAdapter) GetModels() []provider.ModelInfo {
 	return p.models
 }
 
-// IsConfigured returns whether the provider is configured
-func (p *MockProvider) IsConfigured() bool {
+// GetDefaultModel returns the default model
+func (p *MockProviderAdapter) GetDefaultModel() string {
+	return "mock-model-v1"
+}
+
+// IsConfigured always returns true for mock
+func (p *MockProviderAdapter) IsConfigured() bool {
+	return true
+}
+
+// SupportsStreaming returns true
+func (p *MockProviderAdapter) SupportsStreaming() bool {
+	return true
+}
+
+// SupportsTools returns true
+func (p *MockProviderAdapter) SupportsTools() bool {
 	return true
 }
 
 // Chat sends messages and returns a stream of events
-func (p *MockProvider) Chat(ctx context.Context, messages []models.Message, options ChatOptions) (<-chan models.MessageEvent, error) {
+func (p *MockProviderAdapter) Chat(ctx context.Context, messages []models.Message, options provider.ChatOptions) (<-chan models.MessageEvent, error) {
 	eventChan := make(chan models.MessageEvent, 10)
 
 	go func() {
@@ -63,15 +83,14 @@ func (p *MockProvider) Chat(ctx context.Context, messages []models.Message, opti
 		// Token counts (simulated)
 		inputTokens := p.estimateTokens(messages)
 		outputTokens := int32(len(responseText) / 4) // Rough estimate
-		totalTokens := inputTokens + outputTokens
 
 		tokenState := &models.TokenState{
 			InputTokens:             inputTokens,
 			OutputTokens:            outputTokens,
-			TotalTokens:             totalTokens,
+			TotalTokens:             inputTokens + outputTokens,
 			AccumulatedInputTokens:  inputTokens,
 			AccumulatedOutputTokens: outputTokens,
-			AccumulatedTotalTokens:  totalTokens,
+			AccumulatedTotalTokens:  inputTokens + outputTokens,
 		}
 
 		// Send message event
@@ -93,15 +112,41 @@ func (p *MockProvider) Chat(ctx context.Context, messages []models.Message, opti
 	return eventChan, nil
 }
 
+// Generate sends messages and returns a single response
+func (p *MockProviderAdapter) Generate(ctx context.Context, messages []models.Message, options provider.ChatOptions) (*models.Message, *models.TokenState, error) {
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	responseText := p.generateMockResponse(messages)
+	msg := models.NewAssistantMessage(responseText)
+
+	inputTokens := p.estimateTokens(messages)
+	outputTokens := int32(len(responseText) / 4)
+
+	tokenState := &models.TokenState{
+		InputTokens:             inputTokens,
+		OutputTokens:            outputTokens,
+		TotalTokens:             inputTokens + outputTokens,
+		AccumulatedInputTokens:  inputTokens,
+		AccumulatedOutputTokens: outputTokens,
+		AccumulatedTotalTokens:  inputTokens + outputTokens,
+	}
+
+	return &msg, tokenState, nil
+}
+
 // generateMockResponse creates a contextual mock response
-func (p *MockProvider) generateMockResponse(messages []models.Message) string {
-	// Get the last user message
-	var lastUserMsg string
+func (p *MockProviderAdapter) generateMockResponse(messages []models.Message) string {
+	// Find the last user message for context
+	var lastUserContent string
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == models.RoleUser {
 			for _, content := range messages[i].Content {
 				if content.Type == "text" && content.Text != nil {
-					lastUserMsg = *content.Text
+					lastUserContent = *content.Text
 					break
 				}
 			}
@@ -109,36 +154,31 @@ func (p *MockProvider) generateMockResponse(messages []models.Message) string {
 		}
 	}
 
-	if lastUserMsg == "" {
-		return "I'm the mock provider. I received your message but couldn't extract the text content. In Phase 4+, I will be replaced with real LLM integration."
+	if lastUserContent == "" {
+		return "This is a mock response from the Go server. The mock provider is active because no real LLM provider is configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to use real providers."
 	}
 
-	// Generate contextual response
-	response := "This is a mock response from the Go server. "
-	response += "I received your message: \"" + truncate(lastUserMsg, 100) + "\". "
-	response += "In Phase 4+, this mock provider will be replaced with real LLM providers like OpenAI, Anthropic, etc."
-
-	return response
+	truncated := truncate(lastUserContent, 100)
+	return fmt.Sprintf("Mock response to: \"%s\"\n\nThis is a mock response from the Go goose-server. To get real responses, configure an LLM provider:\n\n- Set ANTHROPIC_API_KEY for Claude\n- Set OPENAI_API_KEY for GPT models", truncated)
 }
 
-// estimateTokens provides a rough token count estimate
-func (p *MockProvider) estimateTokens(messages []models.Message) int32 {
-	var totalChars int
+// estimateTokens provides a rough token estimate
+func (p *MockProviderAdapter) estimateTokens(messages []models.Message) int32 {
+	var total int
 	for _, msg := range messages {
 		for _, content := range msg.Content {
 			if content.Type == "text" && content.Text != nil {
-				totalChars += len(*content.Text)
+				total += len(*content.Text)
 			}
 		}
 	}
-	// Rough estimate: 1 token ≈ 4 characters
-	return int32(totalChars / 4)
+	return int32(total / 4) // Rough estimate: 4 chars per token
 }
 
-// truncate truncates a string to maxLen characters
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+// truncate shortens a string to the given length
+func truncate(s string, length int) string {
+	if len(s) <= length {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return s[:length] + "..."
 }

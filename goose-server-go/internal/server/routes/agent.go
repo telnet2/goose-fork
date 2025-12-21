@@ -234,7 +234,7 @@ func (r *AgentRoutes) UpdateProvider(ctx context.Context, c *app.RequestContext)
 	provider, ok := r.agentManager.GetProvider(req.Provider)
 	if !ok {
 		// Fall back to mock provider with the requested name
-		provider = agent.NewMockProvider()
+		provider = agent.NewMockProviderAdapter()
 	}
 
 	// Update agent's provider
